@@ -255,35 +255,55 @@ app.post('/api/patients', authenticateToken, authorizeRole('Nurse', 'Doctor', 'A
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  const query = `
-    INSERT INTO Patient 
-    (patientId, Fname, Lname, Birthdate, Phone, Address, ECname, ECcontact, 
-     Diet, \`Medical History\`, Diagnosis, Discharge, AdmissionDate)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURDATE())
-  `;
-
-  db.query(query, [
-    patientId, Fname, Lname, Birthdate, Phone || null, Address || null,
-    ECname || null, ECcontact || null, Diet || null, MedicalHistory || null,
-    Diagnosis || null
-  ], (err, result) => {
+  // STEP 1: Call stored procedure to get recommended doctor
+  db.query('CALL AllocatePatientToDoctor(?, @assigned_doctor)', [patientId], (err) => {
     if (err) {
-      console.error('Error adding patient:', err);
-      if (err.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ error: 'Patient ID already exists' });
-      }
-      return res.status(500).json({ error: 'Failed to add patient' });
+      console.error('Error allocating doctor:', err);
+      return res.status(500).json({ error: 'Failed to allocate doctor' });
     }
 
-    // Log action
-    db.query(
-      'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue) VALUES (?, ?, ?, ?, ?)',
-      ['Patient', patientId, 'INSERT', req.user.username, `Patient added by ${req.user.username}`]
-    );
+    // STEP 2: Get the assigned doctor ID
+    db.query('SELECT @assigned_doctor as doctorId', (err, result) => {
+      if (err) {
+        console.error('Error getting doctor ID:', err);
+        return res.status(500).json({ error: 'Failed to get doctor assignment' });
+      }
 
-    res.status(201).json({ 
-      message: 'Patient added successfully', 
-      patientId: patientId 
+      const assignedDoctorId = result[0].doctorId;
+
+      // STEP 3: Insert patient with assigned doctor
+      const query = `
+        INSERT INTO Patient 
+        (patientId, Fname, Lname, Birthdate, Phone, Address, ECname, ECcontact, 
+         Diet, \`Medical History\`, Diagnosis, Discharge, AdmissionDate, AssignedDoctorId)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURDATE(), ?)
+      `;
+
+      db.query(query, [
+        patientId, Fname, Lname, Birthdate, Phone || null, Address || null,
+        ECname || null, ECcontact || null, Diet || null, MedicalHistory || null,
+        Diagnosis || null, assignedDoctorId
+      ], (err, result) => {
+        if (err) {
+          console.error('Error adding patient:', err);
+          if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ error: 'Patient ID already exists' });
+          }
+          return res.status(500).json({ error: 'Failed to add patient' });
+        }
+
+        // Log action
+        db.query(
+          'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue) VALUES (?, ?, ?, ?, ?)',
+          ['Patient', patientId, 'INSERT', req.user.username, `Patient added by ${req.user.username}, assigned to ${assignedDoctorId}`]
+        );
+
+        res.status(201).json({ 
+          message: 'Patient added successfully', 
+          patientId: patientId,
+          assignedDoctor: assignedDoctorId
+        });
+      });
     });
   });
 });
