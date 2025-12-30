@@ -294,7 +294,7 @@ app.post('/api/patients', authenticateToken, authorizeRole('Nurse', 'Doctor', 'A
 
         // Log action
         db.query(
-  'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue, ChangedDate) VALUES (?, ?, ?, ?, ?, NOW())',
+  'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue, ChangeDate) VALUES (?, ?, ?, ?, ?, NOW())',
   ['Patient', patientId, 'INSERT', req.user.username, `Patient added by ${req.user.username}, assigned to ${assignedDoctorId}`]
 );
 
@@ -346,7 +346,7 @@ app.put('/api/patients/:id', authenticateToken, authorizeRole('Doctor', 'Admin')
     // Log action
     // Log action
 db.query(
-  'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue, ChangedDate) VALUES (?, ?, ?, ?, ?, NOW())',
+  'INSERT INTO AuditLog (TableName, RecordId, Action, ChangedBy, NewValue, ChangeDate) VALUES (?, ?, ?, ?, ?, NOW())',
   ['Patient', patientId, 'UPDATE', req.user.username, `Patient updated by ${req.user.username}`]
 );
     res.json({ message: 'Patient updated successfully' });
