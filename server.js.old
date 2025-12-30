@@ -1,0 +1,382 @@
+// HealthHub Manager - Backend API
+// Express server with MySQL connection
+
+const express = require('express');
+const mysql = require('mysql2');
+const cors = require('cors');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// MySQL Connection
+const db = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'healthhub_db',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Test database connection
+db.getConnection((err, connection) => {
+  if (err) {
+    console.error('❌ Database connection failed:', err);
+  } else {
+    console.log('✅ Connected to MySQL database');
+    connection.release();
+  }
+});
+
+// ==================== ROUTES ====================
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({ message: 'HealthHub Manager API is running!' });
+});
+
+// ==================== PATIENTS ====================
+
+// Get all patients
+app.get('/api/patients', (req, res) => {
+  const query = `
+    SELECT p.*, mp.Fname as DoctorFname, mp.Lname as DoctorLname, mp.Specialty
+    FROM Patient p
+    LEFT JOIN MedicalPersonnel mp ON p.AssignedDoctorId = mp.MedicalPersonnelId
+    ORDER BY p.patientId
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching patients:', err);
+      return res.status(500).json({ error: 'Failed to fetch patients' });
+    }
+    res.json(results);
+  });
+});
+
+// Get single patient by ID
+app.get('/api/patients/:id', (req, res) => {
+  const query = `
+    SELECT p.*, mp.Fname as DoctorFname, mp.Lname as DoctorLname, mp.Specialty
+    FROM Patient p
+    LEFT JOIN MedicalPersonnel mp ON p.AssignedDoctorId = mp.MedicalPersonnelId
+    WHERE p.patientId = ?
+  `;
+  
+  db.query(query, [req.params.id], (err, results) => {
+    if (err) {
+      console.error('Error fetching patient:', err);
+      return res.status(500).json({ error: 'Failed to fetch patient' });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
+    res.json(results[0]);
+  });
+});
+
+// Get patient prescriptions
+app.get('/api/patients/:id/prescriptions', (req, res) => {
+  const query = `
+    SELECT pr.*, d.DrugsName, d.Dosage, mp.Fname, mp.Lname
+    FROM Prescriptions pr
+    JOIN Drugs d ON pr.DrugID = d.DrugsId
+    JOIN MedicalPersonnel mp ON pr.DoctorID = mp.MedicalPersonnelId
+    WHERE pr.PatientID = ?
+    ORDER BY pr.Date DESC
+  `;
+  
+  db.query(query, [req.params.id], (err, results) => {
+    if (err) {
+      console.error('Error fetching prescriptions:', err);
+      return res.status(500).json({ error: 'Failed to fetch prescriptions' });
+    }
+    res.json(results);
+  });
+});
+
+// Get patient tests
+app.get('/api/patients/:id/tests', (req, res) => {
+  const query = `
+    SELECT tf.*, t.TestName, t.\`Testing Department\`, t.\`Test requirements\`
+    FROM \`Tested for\` tf
+    JOIN Tests t ON tf.TestId = t.TestsId
+    WHERE tf.Patient = ?
+    ORDER BY tf.Date DESC
+  `;
+  
+  db.query(query, [req.params.id], (err, results) => {
+    if (err) {
+      console.error('Error fetching tests:', err);
+      return res.status(500).json({ error: 'Failed to fetch tests' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== MEDICAL PERSONNEL ====================
+
+// Get all medical personnel
+app.get('/api/medical-personnel', (req, res) => {
+  const query = `
+    SELECT mp.*, 
+           COUNT(DISTINCT p.patientId) as patient_count
+    FROM MedicalPersonnel mp
+    LEFT JOIN Patient p ON mp.MedicalPersonnelId = p.AssignedDoctorId
+    GROUP BY mp.MedicalPersonnelId
+    ORDER BY mp.Specialty, mp.Lname
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching medical personnel:', err);
+      return res.status(500).json({ error: 'Failed to fetch medical personnel' });
+    }
+    res.json(results);
+  });
+});
+
+// Get doctors only
+app.get('/api/doctors', (req, res) => {
+  const query = `
+    SELECT mp.*, 
+           COUNT(DISTINCT p.patientId) as patient_count
+    FROM MedicalPersonnel mp
+    LEFT JOIN Patient p ON mp.MedicalPersonnelId = p.AssignedDoctorId
+    WHERE mp.DoctorId IS NOT NULL
+    GROUP BY mp.MedicalPersonnelId
+    ORDER BY mp.Lname
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching doctors:', err);
+      return res.status(500).json({ error: 'Failed to fetch doctors' });
+    }
+    res.json(results);
+  });
+});
+
+// Get single medical personnel
+app.get('/api/medical-personnel/:id', (req, res) => {
+  const query = `
+    SELECT mp.*,
+           supervisor.Fname as SupervisorFname,
+           supervisor.Lname as SupervisorLname
+    FROM MedicalPersonnel mp
+    LEFT JOIN MedicalPersonnel supervisor ON mp.Supervisor = supervisor.DoctorId OR mp.Supervisor = supervisor.License
+    WHERE mp.MedicalPersonnelId = ?
+  `;
+  
+  db.query(query, [req.params.id], (err, results) => {
+    if (err) {
+      console.error('Error fetching medical personnel:', err);
+      return res.status(500).json({ error: 'Failed to fetch medical personnel' });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'Medical personnel not found' });
+    }
+    res.json(results[0]);
+  });
+});
+
+// ==================== PRESCRIPTIONS ====================
+
+// Get all prescriptions
+app.get('/api/prescriptions', (req, res) => {
+  const query = `
+    SELECT pr.*,
+           p.Fname as PatientFname, p.Lname as PatientLname,
+           d.DrugsName, d.Dosage, d.Generics,
+           mp.Fname as DoctorFname, mp.Lname as DoctorLname
+    FROM Prescriptions pr
+    JOIN Patient p ON pr.PatientID = p.patientId
+    JOIN Drugs d ON pr.DrugID = d.DrugsId
+    JOIN MedicalPersonnel mp ON pr.DoctorID = mp.MedicalPersonnelId
+    ORDER BY pr.Date DESC
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching prescriptions:', err);
+      return res.status(500).json({ error: 'Failed to fetch prescriptions' });
+    }
+    res.json(results);
+  });
+});
+
+// Get upcoming refills (next 7 days)
+app.get('/api/prescriptions/refills-due', (req, res) => {
+  const query = `
+    SELECT pr.*,
+           p.Fname as PatientFname, p.Lname as PatientLname,
+           d.DrugsName, d.Dosage,
+           mp.Fname as DoctorFname, mp.Lname as DoctorLname,
+           DATEDIFF(pr.RefillDate, CURDATE()) as days_until_refill
+    FROM Prescriptions pr
+    JOIN Patient p ON pr.PatientID = p.patientId
+    JOIN Drugs d ON pr.DrugID = d.DrugsId
+    JOIN MedicalPersonnel mp ON pr.DoctorID = mp.MedicalPersonnelId
+    WHERE pr.RefillDate BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+    ORDER BY pr.RefillDate
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching refills:', err);
+      return res.status(500).json({ error: 'Failed to fetch refills' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== DRUGS ====================
+
+// Get all drugs
+app.get('/api/drugs', (req, res) => {
+  const query = 'SELECT * FROM Drugs ORDER BY DrugsName';
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching drugs:', err);
+      return res.status(500).json({ error: 'Failed to fetch drugs' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== TESTS ====================
+
+// Get all tests
+app.get('/api/tests', (req, res) => {
+  const query = 'SELECT * FROM Tests ORDER BY TestName';
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching tests:', err);
+      return res.status(500).json({ error: 'Failed to fetch tests' });
+    }
+    res.json(results);
+  });
+});
+
+// Get scheduled tests
+app.get('/api/tests/scheduled', (req, res) => {
+  const query = `
+    SELECT tf.*,
+           t.TestName, t.\`Testing Department\`, t.\`Test requirements\`,
+           p.Fname, p.Lname
+    FROM \`Tested for\` tf
+    JOIN Tests t ON tf.TestId = t.TestsId
+    JOIN Patient p ON tf.Patient = p.patientId
+    ORDER BY tf.Date DESC
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching scheduled tests:', err);
+      return res.status(500).json({ error: 'Failed to fetch scheduled tests' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== REPORTS ====================
+
+// Get all situation reports
+app.get('/api/reports', (req, res) => {
+  const query = `
+    SELECT w.*,
+           p.Fname as PatientFname, p.Lname as PatientLname,
+           mp.Fname as DoctorFname, mp.Lname as DoctorLname,
+           r.reportType
+    FROM Writes w
+    JOIN Patient p ON w.Patient = p.patientId
+    JOIN MedicalPersonnel mp ON w.MedicalPersonnel = mp.MedicalPersonnelId
+    JOIN Report r ON w.Reportid = r.reportId
+    ORDER BY w.Date DESC
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching reports:', err);
+      return res.status(500).json({ error: 'Failed to fetch reports' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== DASHBOARD STATS ====================
+
+// Get dashboard statistics
+app.get('/api/stats', (req, res) => {
+  const queries = {
+    totalPatients: 'SELECT COUNT(*) as count FROM Patient',
+    activePatients: 'SELECT COUNT(*) as count FROM Patient WHERE Discharge = 0',
+    totalDoctors: 'SELECT COUNT(*) as count FROM MedicalPersonnel WHERE DoctorId IS NOT NULL',
+    totalNurses: 'SELECT COUNT(*) as count FROM MedicalPersonnel WHERE DoctorId IS NULL',
+    totalPrescriptions: 'SELECT COUNT(*) as count FROM Prescriptions',
+    upcomingTests: 'SELECT COUNT(*) as count FROM `Tested for` WHERE Date >= CURDATE()',
+    recentReports: 'SELECT COUNT(*) as count FROM Writes WHERE Date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)'
+  };
+  
+  const stats = {};
+  const promises = Object.entries(queries).map(([key, query]) => {
+    return new Promise((resolve, reject) => {
+      db.query(query, (err, results) => {
+        if (err) reject(err);
+        else {
+          stats[key] = results[0].count;
+          resolve();
+        }
+      });
+    });
+  });
+  
+  Promise.all(promises)
+    .then(() => res.json(stats))
+    .catch(err => {
+      console.error('Error fetching stats:', err);
+      res.status(500).json({ error: 'Failed to fetch stats' });
+    });
+});
+
+// ==================== SEARCH ====================
+
+// Search patients
+app.get('/api/search/patients', (req, res) => {
+  const searchTerm = req.query.q || '';
+  const query = `
+    SELECT p.*, mp.Fname as DoctorFname, mp.Lname as DoctorLname
+    FROM Patient p
+    LEFT JOIN MedicalPersonnel mp ON p.AssignedDoctorId = mp.MedicalPersonnelId
+    WHERE p.Fname LIKE ? OR p.Lname LIKE ? OR p.patientId LIKE ?
+    ORDER BY p.Lname
+    LIMIT 20
+  `;
+  
+  const searchPattern = `%${searchTerm}%`;
+  db.query(query, [searchPattern, searchPattern, searchPattern], (err, results) => {
+    if (err) {
+      console.error('Error searching patients:', err);
+      return res.status(500).json({ error: 'Search failed' });
+    }
+    res.json(results);
+  });
+});
+
+// ==================== START SERVER ====================
+
+app.listen(PORT, () => {
+  console.log(`🚀 HealthHub Manager API running on port ${PORT}`);
+  console.log(`📍 http://localhost:${PORT}`);
+});
+
+module.exports = app;
