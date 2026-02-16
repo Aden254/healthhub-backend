@@ -25,11 +25,7 @@ try {
 }
 
 // Middleware
-app.use(cors({
-  origin: ['http://localhost:5173', 'https://localhost:5173', 'http://172.20.238.43:5173', 'https://172.20.238.43:5173'],
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  credentials: true
-}));
+app.use(cors());
 app.use(express.json());
 
 // Database connection
