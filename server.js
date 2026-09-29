@@ -4,7 +4,102 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
+
+// ── Mailer setup ─────────────────────────────────────────────────────────────
+// Set EMAIL_USER + EMAIL_PASS (Gmail App Password) in Railway env vars.
+// If not configured, session creation still works — the link is returned in the
+// API response so the doctor can copy and share it manually.
+let mailer = null;
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+  mailer = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,  // Gmail App Password (not your account password)
+    },
+  });
+  mailer.verify((err) => {
+    if (err) console.error('[Mail] SMTP verification failed:', err.message);
+    else     console.log('[Mail] SMTP ready —', process.env.EMAIL_USER);
+  });
+} else {
+  console.log('[Mail] EMAIL_USER / EMAIL_PASS not set — email sending disabled. Set these in Railway to enable.');
+}
+
+async function sendConsultLink({ toEmail, toName, doctorName, sessionLink, expiresInHours }) {
+  if (!mailer) return false;
+  const expires = expiresInHours === 1 ? '1 hour' : `${expiresInHours} hours`;
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:system-ui,-apple-system,sans-serif">
+  <div style="max-width:520px;margin:32px auto;background:#fff;border-radius:10px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.07)">
+    <!-- Header -->
+    <div style="background:#0f172a;padding:20px 28px;display:flex;align-items:center;gap:10px">
+      <div style="background:#eff6ff;border-radius:6px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#1d4ed8" stroke-width="2.5" stroke-linecap="round">
+          <line x1="10" y1="4" x2="10" y2="16"/><line x1="4" y1="10" x2="16" y2="10"/>
+        </svg>
+      </div>
+      <div>
+        <div style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-0.01em">HealthHub · ConsultLink</div>
+        <div style="color:#94a3b8;font-size:11px;letter-spacing:0.06em;text-transform:uppercase">Telehealth Consultation</div>
+      </div>
+    </div>
+    <!-- Body -->
+    <div style="padding:28px">
+      <p style="margin:0 0 6px;font-size:11px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.07em">Your Appointment</p>
+      <h1 style="margin:0 0 18px;font-size:20px;font-weight:700;color:#0f172a;letter-spacing:-0.01em">Video Consultation Ready</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6">
+        Hello ${toName},<br><br>
+        <strong>${doctorName}</strong> has created a secure video consultation session for you.
+        Click the button below to join — your session link is valid for <strong>${expires}</strong>.
+      </p>
+      <!-- CTA -->
+      <div style="text-align:center;margin:24px 0">
+        <a href="${sessionLink}" style="display:inline-block;padding:13px 32px;background:#1d4ed8;color:#fff;font-size:14px;font-weight:700;text-decoration:none;border-radius:7px;letter-spacing:0.01em">
+          Join Video Consultation
+        </a>
+      </div>
+      <!-- Link fallback -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:14px 16px;margin-bottom:20px">
+        <p style="margin:0 0 5px;font-size:11px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.07em">Or copy this link</p>
+        <p style="margin:0;font-size:12px;color:#1d4ed8;word-break:break-all;font-family:monospace">${sessionLink}</p>
+      </div>
+      <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6">
+        You will be asked for your name and camera/microphone access when you join.
+        If you did not expect this invitation, please disregard this message.
+      </p>
+    </div>
+    <!-- Footer -->
+    <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:14px 28px;display:flex;align-items:center;gap:6px">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round">
+        <path d="M8 1.5L2 4v4.5C2 12.1 5 15 8 15.5c3-0.5 6-3.4 6-7V4L8 1.5z"/>
+        <path d="M5.5 8.5l2 2 3-3"/>
+      </svg>
+      <span style="font-size:11px;color:#94a3b8">HIPAA compliant · Encrypted session · Access logged · HealthHub v3.0</span>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  try {
+    await mailer.sendMail({
+      from: `"HealthHub ConsultLink" <${process.env.EMAIL_USER}>`,
+      to: `"${toName}" <${toEmail}>`,
+      subject: `Video Consultation with ${doctorName} — ConsultLink`,
+      html,
+      text: `Hello ${toName},\n\n${doctorName} has created a secure video consultation session for you.\n\nJoin here (valid for ${expires}):\n${sessionLink}\n\n— HealthHub ConsultLink`,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Mail] Failed to send consultation link:', err.message);
+    return false;
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -569,12 +664,27 @@ app.post('/api/consultations/create', authenticateToken, authorizeRole('Doctor',
 
     const [created] = await query(`SELECT expires_at FROM consultation_sessions WHERE session_id = ?`, [sessionId]);
 
+    // Send email with the join link — non-blocking, never fails the request
+    let emailSent = false;
+    if (patientEmail) {
+      const doctorName = req.user.name || 'Your Doctor';
+      emailSent = await sendConsultLink({
+        toEmail: patientEmail,
+        toName: patientName,
+        doctorName,
+        sessionLink,
+        expiresInHours,
+      });
+      console.log(`[Mail] Consultation link ${emailSent ? 'sent' : 'FAILED'} to ${patientEmail}`);
+    }
+
     res.status(201).json({
       success: true,
       sessionId,
       sessionLink,
       sessionToken,
-      expiresAt: created.expires_at
+      expiresAt: created.expires_at,
+      emailSent,
     });
   } catch (error) {
     console.error('Session creation error:', error);
